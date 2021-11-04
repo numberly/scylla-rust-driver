@@ -155,6 +155,7 @@ pub struct ConnectionConfig {
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
     pub connect_timeout: std::time::Duration,
+    pub client_timeout: std::time::Duration,
     // should be Some only in control connections,
     pub event_sender: Option<mpsc::Sender<Event>>,
     /*
@@ -180,6 +181,7 @@ impl Default for ConnectionConfig {
             auth_username: None,
             auth_password: None,
             connect_timeout: std::time::Duration::from_secs(5),
+            client_timeout: std::time::Duration::from_secs(30),
         }
     }
 }

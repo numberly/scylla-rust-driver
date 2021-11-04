@@ -86,6 +86,7 @@ pub struct SessionConfig {
 
     pub schema_agreement_interval: Duration,
     pub connect_timeout: std::time::Duration,
+    pub client_timeout: std::time::Duration,
 
     /// Size of the per-node connection pool, i.e. how many connections the driver should keep to each node.
     /// The default is `PerShard(1)`, which is the recommended setting for Scylla clusters.
@@ -138,6 +139,7 @@ impl SessionConfig {
             auth_username: None,
             auth_password: None,
             connect_timeout: std::time::Duration::from_secs(5),
+            client_timeout: std::time::Duration::from_secs(30),
             connection_pool_size: Default::default(),
             disallow_shard_aware_port: false,
         }
@@ -220,6 +222,7 @@ impl SessionConfig {
             auth_username: self.auth_username.to_owned(),
             auth_password: self.auth_password.to_owned(),
             connect_timeout: self.connect_timeout,
+            client_timeout: self.client_timeout,
             ..Default::default()
         }
     }
