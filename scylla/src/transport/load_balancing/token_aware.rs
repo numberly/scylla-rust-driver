@@ -102,33 +102,32 @@ impl TokenAwarePolicy {
 
         result
     }
+
+    pub fn replicas(cluster: &ClusterData, keyspace: Option<&str>, token: Token) -> Vec<Arc<Node>> {
+        match keyspace
+            .and_then(|k| cluster.keyspaces.get(k))
+            .map(|k| &k.strategy)
+        {
+            Some(Strategy::SimpleStrategy { replication_factor }) => {
+                Self::simple_strategy_replicas(cluster, &token, *replication_factor)
+            }
+            Some(Strategy::NetworkTopologyStrategy {
+                datacenter_repfactors,
+            }) => Self::network_topology_strategy_replicas(cluster, &token, datacenter_repfactors),
+            _ => {
+                // default to simple strategy with replication factor = 1
+                let replication_factor = 1;
+                Self::simple_strategy_replicas(cluster, &token, replication_factor)
+            }
+        }
+    }
 }
 
 impl LoadBalancingPolicy for TokenAwarePolicy {
     fn plan<'a>(&self, statement: &Statement, cluster: &'a ClusterData) -> Plan<'a> {
         match statement.token {
             Some(token) => {
-                let keyspace = statement.keyspace.and_then(|k| cluster.keyspaces.get(k));
-
-                let strategy = keyspace.map(|k| &k.strategy);
-
-                let replicas = match strategy {
-                    Some(Strategy::SimpleStrategy { replication_factor }) => {
-                        Self::simple_strategy_replicas(cluster, &token, *replication_factor)
-                    }
-                    Some(Strategy::NetworkTopologyStrategy {
-                        datacenter_repfactors,
-                    }) => Self::network_topology_strategy_replicas(
-                        cluster,
-                        &token,
-                        datacenter_repfactors,
-                    ),
-                    _ => {
-                        // default to simple strategy with replication factor = 1
-                        let replication_factor = 1;
-                        Self::simple_strategy_replicas(cluster, &token, replication_factor)
-                    }
-                };
+                let replicas = Self::replicas(cluster, statement.keyspace, token);
                 trace!(
                     token = token.value,
                     replicas = replicas

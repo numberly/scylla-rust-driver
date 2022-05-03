@@ -22,7 +22,7 @@ use crate::frame::response::result;
 use crate::frame::value::{BatchValues, SerializedValues, ValueList};
 use crate::prepared_statement::{PartitionKeyError, PreparedStatement};
 use crate::query::Query;
-use crate::routing::Token;
+use crate::routing::{Shard, Token};
 use crate::statement::{Consistency, SerialConsistency};
 use crate::tracing::{GetTracingConfig, TracingEvent, TracingInfo};
 use crate::transport::cluster::{Cluster, ClusterData};
@@ -710,6 +710,28 @@ impl Session {
         self.handle_set_keyspace_response(&response).await?;
 
         response.into_query_result()
+    }
+
+    pub fn get_endpoints(
+        &self,
+        prepared: &PreparedStatement,
+        values: impl ValueList,
+    ) -> Result<Vec<(Arc<Node>, Option<Shard>)>, QueryError> {
+        let serialized_values = values.serialized()?;
+        let token = self.calculate_token(prepared, &serialized_values)?;
+        Ok(TokenAwarePolicy::replicas(
+            &self.cluster.get_data(),
+            prepared.get_keyspace_name(),
+            token,
+        )
+        .iter()
+        .map(|node| {
+            (
+                node.clone(),
+                node.sharder().map(|sharder| sharder.shard_of(token)),
+            )
+        })
+        .collect())
     }
 
     /// Run a prepared query with paging\
