@@ -2,9 +2,10 @@
 //! It manages all connections to the cluster and allows to perform queries.
 
 use crate::frame::types::LegacyConsistency;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::join_all;
 use futures::future::try_join_all;
+use std::convert::TryInto;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -36,9 +37,7 @@ use crate::transport::load_balancing::{
 };
 use crate::transport::metrics::Metrics;
 use crate::transport::node::Node;
-use crate::transport::partitioner::{
-    CDCPartitioner, Murmur3Partitioner, Partitioner, PartitionerName,
-};
+use crate::transport::partitioner::PartitionerName;
 use crate::transport::query_result::QueryResult;
 use crate::transport::retry_policy::{
     DefaultRetryPolicy, QueryInfo, RetryDecision, RetryPolicy, RetrySession,
@@ -714,24 +713,52 @@ impl Session {
 
     pub fn get_endpoints(
         &self,
-        prepared: &PreparedStatement,
+        keyspace: &str,
+        table: &str,
         values: impl ValueList,
-    ) -> Result<Vec<(Arc<Node>, Option<Shard>)>, QueryError> {
+    ) -> Result<Vec<(Arc<Node>, Option<Shard>)>, BadQuery> {
+        let partitioner = self
+            .cluster
+            .get_data()
+            .keyspaces
+            .get(keyspace)
+            .and_then(|k| k.tables.get(table))
+            .and_then(|t| t.partitioner.as_deref())
+            .and_then(PartitionerName::from_str)
+            .unwrap_or_default();
         let serialized_values = values.serialized()?;
-        let token = self.calculate_token(prepared, &serialized_values)?;
-        Ok(TokenAwarePolicy::replicas(
-            &self.cluster.get_data(),
-            prepared.get_keyspace_name(),
-            token,
+        let partition_key =
+            match serialized_values.len() {
+                0 => None,
+                1 => serialized_values
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .map(Bytes::copy_from_slice),
+                _ => {
+                    let mut buf = BytesMut::new();
+                    for v in serialized_values.iter().flatten() {
+                        buf.put_u16(v.len().try_into().map_err(|_| {
+                            BadQuery::ValuesTooLongForKey(v.len(), u16::MAX.into())
+                        })?);
+                        buf.extend_from_slice(v);
+                        buf.put_u8(0);
+                    }
+                    Some(buf.into())
+                }
+            };
+        let token = partitioner.hash(partition_key.unwrap_or_default());
+        Ok(
+            TokenAwarePolicy::replicas(&self.cluster.get_data(), Some(keyspace), token)
+                .iter()
+                .map(|node| {
+                    (
+                        node.clone(),
+                        node.sharder().map(|sharder| sharder.shard_of(token)),
+                    )
+                })
+                .collect(),
         )
-        .iter()
-        .map(|node| {
-            (
-                node.clone(),
-                node.sharder().map(|sharder| sharder.shard_of(token)),
-            )
-        })
-        .collect())
     }
 
     /// Run a prepared query with paging\
@@ -1308,10 +1335,7 @@ impl Session {
 
         let partition_key = calculate_partition_key(prepared, serialized_values)?;
 
-        Ok(match partitioner_name {
-            PartitionerName::Murmur3 => Murmur3Partitioner::hash(partition_key),
-            PartitionerName::CDC => CDCPartitioner::hash(partition_key),
-        })
+        Ok(partitioner_name.hash(partition_key))
     }
 }
 
